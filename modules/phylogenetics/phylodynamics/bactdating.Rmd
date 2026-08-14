@@ -1,0 +1,275 @@
+---
+title: "DEGAIN TRAINING - Molecular Dating Analysis with BactDating"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    theme: cosmo
+    highlight: textmate
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE, eval=FALSE, fig.width=8, fig.height=8)
+```
+
+
+## Introduction & Prerequisites
+
+Welcome to the **BactDating Training Workbook**. This guide contains code and instructions to perform molecular dating on bacterial genomic datasets.
+
+Bacterial genomes are frequently shaped by homologous recombination, which introduces homoplasies and distorts branch lengths, confounding standard phylogenetic dating methods. To mitigate this, we typically use recombination detection tools such as **Gubbins** (Genealogies Unbiased By Recombinations In Nucleotide Sequences) to identify and mask recombinant regions, producing a recombination-corrected phylogenetic tree.
+
+This workbook picks up exactly at that point. We assume you have already run Gubbins and have your recombination-corrected tree ready.
+
+### Learning Objectives
+
+By the end of this workbook, you will be able to:
+
+1. Load and visualise phylogenetic trees and metadata in R.
+2. Formally assess the **temporal signal** in the phylogenetic tree.
+3. Run Bayesian MCMC simulations using `BactDating`.
+4. Perform model evaluation and extract evolutionary parameters.
+
+
+### Directory Setup
+
+Ensure your workspace is organized as follows:
+
+```text
+project_root/
+├── data/your_group/
+│   ├── gubbins/
+│       ├── ...   
+│   └── metadata.tsv        # Sampling dates and metadata
+└── scripts/
+└── bactdating.Rmd          # This workbook
+```
+
+---
+
+## Environment and Data Preparation
+
+First, we need to install and load the required packages.
+
+```{r package-installation}
+# Install packages if not already installed
+if (!requireNamespace("tidyverse", quietly = TRUE)) install.packages("tidyverse")
+if (!requireNamespace("ape", quietly = TRUE)) install.packages("ape")
+if (!requireNamespace("phangorn", quietly = TRUE)) install.packages("phangorn")
+if (!requireNamespace("phytools", quietly = TRUE)) install.packages("phytools")
+if (!requireNamespace("coda", quietly = TRUE)) install.packages("coda")
+if (!requireNamespace("devtools", quietly = TRUE)) install.packages("devtools")
+if (!requireNamespace("BactDating", quietly = TRUE)) devtools::install_github("xavierdidelot/BactDating")
+
+# Load libraries
+library(tidyverse)
+library(ape)
+library(coda)
+library(BactDating)
+library(phangorn)
+library(phytools)
+
+```
+
+
+### Loading the Input Data
+
+We could read the input tree directly, but BactDating has a built-in function to load Gubbins output. 
+This allows `bactdate` to account for the recombination information not included in the trees.  
+  
+We will load in the Gubbins output as well as a metadata tsv file containing sampling dates.
+
+```{r load-data}
+seed <- 3
+
+
+# Define paths to your project data directory
+project_dir <- here::here()
+my_data_dir <- file.path(project_dir, "data", "data_c12") # change this to your specific group
+
+# To load the Gubbins tree, BactDating requires the full path to the gubbins directory 
+# concatenated to the prefix of the Gubbins output files. 
+# Set that below
+gubbins_prefix <- file.path(my_data_dir, "gubbins/clean.full")
+
+# Load the Gubbins tree and recombination info 
+tree <- loadGubbins(gubbins_prefix)
+
+# Quick inspection of the tree object
+tree
+
+# Drop the reference sequence and midpoint-root the tree
+tree <- ape::drop.tip(tree, "Reference")
+tree <- phangorn::midpoint(tree)
+
+# IMPORTANT!! Verify that your tree branch lengths are recorded in number of substitutions
+sum(tree$edge.length)
+
+# Load metadata
+metadata <- read_tsv(file.path(my_data_dir, "metadata.tsv"), show_col_types = FALSE) %>% 
+    mutate(year_num  = decimal_date(ymd(paste(year, month, day, sep = "-"))))
+
+# Examine the structure of your metadata
+head(metadata)
+
+
+# Ensure the tip labels exist in the metadata ID column (assuming column name is 'id')
+setdiff(tree$tip.label, metadata$id)
+
+# Reorder metadata to match the exact order of the tree tip labels
+metadata <- metadata[match(tree$tip.label, metadata$id), ]
+
+# Extract sampling dates as a numeric vector 
+dates <- metadata %>% 
+    select(id, year_num) %>% 
+    deframe()
+
+# Check for any NA values in dates
+any(is.na(dates))
+
+# date range
+range(dates)
+```
+
+---
+
+# Assessing Temporal Signal (Root-to-Tip Regression)
+
+We can use linear regression on reoot-to-tip distances and sampling dates to assess the strength of the temporal signal in the data. The general idea is that sequences sampled later in calendar time should have accumulated more mutations and thus be more distant from the root than sequences sampled earlier.
+
+We will use `BactDating::roottotip` to perform a linear regression of root-to-tip divergence against sampling dates.
+
+```{r root-to-tip_tree}
+# Perform root-to-tip regression
+roottotip(tree, dates)
+```
+
+#### Discussion ----
+Discuss your observations. In particular, discuss
+  - slope / substitution rate
+  - the distribution of sampling dates vs root-to-tip distance
+  - the computed R^2 value and p-value
+  - what these say about the temporal signal in the data?
+
+Let us try re-rooting the tree based on the best root-to-tip correlation
+```{r root-to-tip_rooted_tree}
+rooted_tree <- initRoot(tree, dates)
+# repeat the root-to-tip regression analysis and discuss your observations as above
+roottotip(rooted_tree, dates)
+```
+
+
+---
+
+# Model Selection & Initiating the MCMC Run
+
+`BactDating` allows you to fit several clock models. The two most commonly used are:
+
+* **Strict Clock (`"strict"`):** Assumes a constant substitution rate across all lineages.
+* **Relaxed Clock (`"relaxed"`):** Assumes substitution rates vary across branches according to an uncorrelated lognormal distribution.
+* **Mixed:** Interchanges between the stric and relaxed clock models during the MCMC run.
+
+To decide which model fits your data best, we typically run the different models and compare them using Deviance Information Criterion (DIC). 
+Here we will compare the mixed and relaxed clock models.
+
+### Mixed Model
+
+For training purposes, we will run `nbIts = 1e5` (100,000 generations). For real publication-quality data, this should typically be increased to `1e7` or higher.
+
+```{r run-strict-clock}
+set.seed(seed) 
+mcmc_mixed <- bactdate(tree = rooted_tree, date = dates, model = "mixedgamma", nbIts = 100000)
+mcmc_mixed
+```
+
+### Relaxed Clock Model
+
+Now, we perform the same analysis under a relaxed clock model to accommodate rate variation among branches.
+
+```{r run-relaxed-clock}
+set.seed(seed)
+mcmc_relaxed <- bactdate(tree = rooted_tree, date = dates, model = "relaxedgamma", nbIts = 100000)
+mcmc_relaxed
+```
+
+### Model Comparison via DIC
+
+We use the Deviance Information Criterion (DIC) to determine which clock model is a better fit for our genomic data. Lower DIC values indicate a better model fit.
+
+```{r model-comparison}
+# Estimate effective sample size (ESS) values for both models
+coda::effectiveSize(as.mcmc.resBactDating(mcmc_mixed))
+coda::effectiveSize(as.mcmc.resBactDating(mcmc_relaxed))
+
+# Compare models
+modelcompare(mcmc_mixed, mcmc_relaxed)
+mcmc_best <- mcmc_mixed # or mcmc_relaxed
+```
+
+
+#### Discussion ----
+Discuss the results obtained so far.
+  - Why did we use the input tree we used?
+  - Which is the better model based on the DIC?
+  - How do the estimated parameters compare between both models?
+
+---
+
+###  MCMC Convergence Diagnostics and Evaluation
+
+Assessing the convergence of any MCMC analysis is a critical step in the process. Basically, we need to verify that the Markov chains reached a stationary distribution and that our effective sample sizes (ESS) are sufficiently high.
+
+```{r convergence-diagnostics}
+# Generate trace plots for key parameters (mu, root date, likelihood)
+plot(mcmc_mixed, "trace")
+plot(mcmc_relaxed, "trace")
+
+```
+
+#### Discussion ----
+Discuss the assessment results above.
+  - Was a stationary distribution reaached for all parameters of interest?
+  - What do the trace plots and ESS values tell us about the mixing and convergence of the chains?
+  - Assuming there is insufficient mixing and/or convergence, based on the parameters estimated, how may these be improved?
+  - Can we attempt a Gelman-Rubin diagnostic with this data? Why if yes/no?
+  - An important way to assess the temporal signal in the dataset is to compare the MCMC results obtained to one where the dates of the taxa are either fixed or randomised. Create a new chunk below with code for how you might run this assessment? 
+
+---
+
+
+# Extracting and Visualizing Results
+
+If convergence is confirmed, we can interpret our estimates and plot our final dated phylogenetic tree.
+
+Let's print the parameter estimates again and discuss the results
+
+```{r extract-parameters}
+summary(mcmc_best)
+```
+
+We can extract a BEAST-like tree for visualisation. For this we will use a custom function.
+
+```{r plot-dated-tree}
+# Get BEAST-like tree
+beast_tree <- bd_to_beast_tree(mcmc_best, dates, show_tree = T) %>% 
+    full_join(., metadata %>% rename("label"="id"), by = "label")
+
+# save tree
+treeio::write.beast(cl_tree, file.path(my_data_dir, "/dated_tree.tree"))
+
+# # plot
+# ggtree::ggtree(beast_tree, mrsd = date_decimal(max(dates, na.rm = T))) +
+#     ggtree::theme_tree2()
+
+
+```
+
+#### Discussion ----
+  - What are the divergence dates of any clades of interest? 
+  - What does the MRSD represent and why is it useful?
+

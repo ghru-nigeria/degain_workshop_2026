@@ -1,0 +1,258 @@
+---
+title: "DEGAIN TRAINING 2026 - Ancestral State Reconstruction"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    theme: cosmo
+    highlight: textmate
+    number_sections: true
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE, eval=FALSE, fig.width=8, fig.height=8)
+```
+
+
+## Introduction & Prerequisites
+
+Welcome to the **ASR Training Workbook**. This guide contains code and instructions to perform ancestral state reconstruction for discrete bacterial traits of interest using dated phylogenies.
+
+We assume you have already run **BactDating** and have your time-calibrated tree ready.
+
+### Learning Objectives
+
+By the end of this workbook, you will be able to:
+
+1. Load and visualise dated phylogenetic trees and metadata in R.
+2. Perform ancestral state reconstruction of discrete traits.
+
+
+### Directory Setup
+
+Ensure your workspace is organized as follows:
+```text
+project_root/
+├── data/data_kpn/
+│   ├── dated_tree.tree
+│   └── metadata.tsv        # metadata with traits info
+└── scripts/
+└── asr.Rmd          # This workbook
+```
+
+---
+    
+    
+```{r}
+library(tidyverse)
+library(ggtree)
+library(treeio)
+library(phytools)
+
+source("scripts/asr_fnxs.R")
+```
+
+```{r}
+seed <- 98437621
+```
+
+
+```{r load_data}
+# Set data directories
+project_dir <- here::here()
+my_data_dir <- file.path(project_dir, "data/data_kpn/") 
+
+# Load metadata
+metadata <- read_tsv(file.path(my_data_dir, "metadata.tsv"), show_col_types=F) 
+
+# Load dated tree
+tree_data <- treeio::read.beast(file.path(my_data_dir, "dated_tree.tree"))
+tree <- tree_data@phylo
+
+# Set 0 branch lengths to very small num (ace doesnt like these)
+tree$edge.length[tree$edge.length==0]<-max(nodeHeights(tree))*1e-6
+
+# Subset metadata based on tree tips and get columns for asr
+tree_meta <- metadata %>% slice(match(tree$tip.label, sequence_id)) %>% 
+    select(sequence_id, region, country, K_locus, O_type, year) 
+
+# join metadata to tree
+tree_and_clone_data <- full_join(tree_data, tree_meta %>% rename("label"="sequence_id"), 
+                                 by = "label")
+
+# mrsd
+data_mrsd_year <- max(tree_meta$year, na.rm=T)
+data_mrsd <- paste0(data_mrsd_year, "-01-01")
+data_mrsd_rtt <- max(nodeHeights(tree)) # longest root to tip distance (years)
+
+# make k locus vec for asr 
+k_loci_data <- tree_meta %>% select(sequence_id, K_locus) %>% deframe() %>% as.factor()
+
+# make country data for asr
+country_data <- tree_meta %>% select(sequence_id, country) %>% deframe() %>% as.factor()
+
+# get k locus colours for subsequent plot(s)
+k_loci_cols <- get_colours(k_loci_data)
+
+# get country colours for subsequent plot(s)
+country_cols <- get_colours(country_data)
+```
+
+
+```{r k_asr}
+# Use the equal rates model and stochastic character mapping method
+n_simulations <- 100
+set.seed(seed)
+ktrees <- phytools::make.simmap(tree, k_loci_data, model="ER", nsim = n_simulations)
+
+# pick a representative tree
+k_rep_tree <- ktrees[[1]]
+
+# summarise stochastic character maps
+k_simmap_summary <- summary(ktrees, ref.tree = tree)
+print(k_simmap_summary)
+
+# plot summary on tree
+plot(k_simmap_summary, colors=k_loci_cols, fsize=0.000000001)
+
+# more detailed summary
+k_described_simmap <- phytools::describe.simmap(ktrees)
+
+# calculate mean time spent in each state
+k_mean_times <- apply(k_described_simmap$times, 2, mean) %>%
+    as.list() %>% 
+    data.frame(check.names=FALSE) %>% 
+    as_tibble() %>% 
+    pivot_longer(cols = c(-total), names_to = "locus", values_to = "years") %>% 
+    mutate(prop_of_time_in_state = years/total) %>% 
+    select(locus, total_tree_time = total, years_in_state = years,
+           prop_of_time_in_state)
+
+# calculate mean transitions
+k_mean_counts <- apply(k_described_simmap$count, 2, mean) %>%
+    as.list() %>% 
+    data.frame(check.names=FALSE) %>% 
+    as_tibble() %>%
+    rename("mean_transitions" = "N")
+
+# plot mean transitions
+k_mean_counts_plot <- k_mean_counts %>% 
+    pivot_longer(-c(mean_transitions), values_to = "transitions") %>% 
+    mutate(transitions = round(transitions, 2)) %>% 
+    separate_wider_delim(name, delim=",", names = c("loc1", "loc2")) %>% 
+    ggplot(aes(x=loc1, y=loc2, fill=transitions)) +
+    geom_tile() + 
+    geom_text(aes(label = transitions), color = "black", size = 3) +
+    theme_classic() + 
+    scale_fill_distiller(palette = "YlOrRd", name = "Transitions") + 
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+          axis.text = element_text(size = 12),
+          legend.title = element_text(size = 12)) + 
+    labs(title = "K transition matrix", x=NULL, y=NULL)
+k_mean_counts_plot
+ggsave(file.path(my_data_dir, "k_transitions.png"),
+       plot=k_mean_counts_plot, height=7, width=8, bg="white")
+
+# plot reconstructed tree
+png(file.path(my_data_dir, "k_asr_tree.png"),
+    width = 280, height = 325, units='mm', res = 300)
+plot_ancestral_state(k_rep_tree, k_loci_data, k_simmap_summary,
+                     colours=get_colours(k_loci_data), tree_type='phylogram',
+                     add_node_pies=T, legend_size=0.9)
+dev.off()
+```
+
+### Discussion
+
+1. In the code, we run `n_simulations <- 100 models`. Why do we simulate 100 character maps instead of just running a single reconstruction? What statistical advantage does this pool of simulations provide when we call `summary(ktrees)`?
+
+2. When rendering the final plot, the function uses `k_rep_tree <- ktrees[1]`. What is this tree? What is the difference between what `ktrees[1]` represents versus what `ksimmap_summary$ace` represents?
+
+3. We specified `model="ER"` in `make.simmap()`. What does this mean? In what biological scenarios would an 'ER' model likely be flawed?
+
+4. Look closely at how `k_mean_times` and `k_mean_counts` are calculated. If a tree shows that a lineage spent 80% of its total evolutionary time in a specific state, and the transition matrix shows zero transitions originating from that state, how would you interpret the evolutionary stability of that trait (not just the specific state in question)? In our example, what can you say about the stability of the K loci in this lineage?
+
+5. Look at the pie charts plotted on the nodes of your reconstructed ancestral state tree. If a node is split 50/50 between two colors, what does this tell you about the ancestral state at that specific point in evolutionary time? How should we talk about this node in our results compared to a node that is 100% one color?
+
+6. Examine the k transition matrix heatmap. Which transitions appear to be the most frequent?
+
+
+---
+
+### Further exercise
+
+Using the code above, reconstruct ancestral states of the country of isolation 
+throughout the tree and prepare a 2-slide presentation to discuss any interesting findings with the class. 
+
+```{r country_asr}
+# Use the equal rates model and stochastic character mapping method
+n_simulations <- 100
+set.seed(seed)
+ctrytrees <- phytools::make.simmap(tree, country_data, model="ER", nsim = n_simulations)
+
+# pick a representative tree
+ctry_rep_tree <- ctrytrees[[1]]
+
+# summarise stochastic character maps
+ctry_simmap_summary <- summary(ctrytrees, ref.tree = tree)
+print(ctry_simmap_summary)
+
+# plot summary on tree
+plot(ctry_simmap_summary, colors=country_cols, fsize=0.000000001)
+
+# more detailed summary
+ctry_described_simmap <- phytools::describe.simmap(ctrytrees)
+
+# calculate mean time spent in each state
+ctry_mean_times <- apply(ctry_described_simmap$times, 2, mean) %>%
+    as.list() %>% 
+    data.frame(check.names=FALSE) %>% 
+    as_tibble() %>% 
+    pivot_longer(cols = c(-total), names_to = "locus", values_to = "years") %>% 
+    mutate(prop_of_time_in_state = years/total) %>% 
+    select(locus, total_tree_time = total, years_in_state = years,
+           prop_of_time_in_state)
+
+# calculate mean transitions
+ctry_mean_counts <- apply(ctry_described_simmap$count, 2, mean) %>%
+    as.list() %>% 
+    data.frame(check.names=FALSE) %>% 
+    as_tibble() %>%
+    rename("mean_transitions" = "N")
+
+# plot mean transitions
+ctry_mean_counts_plot <- ctry_mean_counts %>% 
+    pivot_longer(-c(mean_transitions), values_to = "transitions") %>% 
+    mutate(transitions = round(transitions, 2)) %>% 
+    separate_wider_delim(name, delim=",", names = c("loc1", "loc2")) %>% 
+    ggplot(aes(x=loc1, y=loc2, fill=transitions)) +
+    geom_tile() + 
+    geom_text(aes(label = transitions), color = "black", size = 3) +
+    theme_classic() + 
+    scale_fill_distiller(palette = "YlOrRd", name = "Transitions") + 
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+          axis.text = element_text(size = 12),
+          legend.title = element_text(size = 12)) + 
+    labs(title = "Country transition matrix", x=NULL, y=NULL)
+ctry_mean_counts_plot
+ggsave(file.path(my_data_dir, "ctry_transitions.png"),
+       plot=ctry_mean_counts_plot, height=7, width=8, bg="white")
+
+# plot reconstructed tree
+png(file.path(my_data_dir, "ctry_asr_tree.png"),
+    width = 280, height = 325, units='mm', res = 300)
+plot_ancestral_state(ctry_rep_tree, country_data, ctry_simmap_summary,
+                     colours=get_colours(country_data), tree_type='phylogram',
+                     add_node_pies=T, legend_size=0.9)
+dev.off()
+
+```
+
+
