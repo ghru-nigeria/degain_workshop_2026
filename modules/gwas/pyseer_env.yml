@@ -1,0 +1,13 @@
+name: degain_gwas
+
+channels:
+  - conda-forge
+  - bioconda
+
+dependencies:
+  - pyseer
+  - fsm-lite
+  - unitig-caller
+  - unitig-counter
+  - iqtree
+  - fasttree
