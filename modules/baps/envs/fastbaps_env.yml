@@ -1,0 +1,8 @@
+name: degain_fastbaps
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - r-base
+  - r-fastbaps=1.0.8

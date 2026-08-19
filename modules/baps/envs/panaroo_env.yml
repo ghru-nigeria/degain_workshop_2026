@@ -1,0 +1,8 @@
+name: degain_panaroo
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - panaroo=1.6.0
+  - biopython=1.83
