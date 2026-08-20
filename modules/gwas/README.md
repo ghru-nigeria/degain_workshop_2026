@@ -21,7 +21,7 @@ By the end of this tutorial, participants should be able to:
 3. The following tools should be downloaded beforehand: pyseer, fsm-lite, and unitig-caller.
 Alternatively, the following command can be used to install all required tools within a conda environment
 ```bash
-   conda create -f pyseer_env.yml
+   conda env create -f envs/pyseer_env.yml
 ```
 
 ## Questions?
