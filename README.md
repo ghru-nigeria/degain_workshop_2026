@@ -4,12 +4,12 @@ Materials from the DeGAiN workshop on deeper analysis of whole genome sequence d
 This two-week workshop given at the Global Health Research Unit (Department of Pharmaceutical Microbiology, University of Ibadan, Nigeria) from July 20 - July 31 2026 covered the following topics:
 
 ## Week 1 (Module 1): To refine population structures of diarrhoeagenic E. coli (DEC) subgroups in Nigeria
-- Bayesian Analysis of DEC Population Structure
-- Recombination Frequencies in Diarrhoeagenic Escherichia coli lineages
-- Molecular Dating and Phylodynamics of DEC lineages 
+- [Bayesian Analysis of DEC Population Structure](https://github.com/ghru-nigeria/degain_workshop_2026/tree/main/modules/baps)
+- [Recombination Frequencies in Diarrhoeagenic Escherichia coli lineages](https://github.com/ghru-nigeria/degain_workshop_2026/tree/main/modules/recombination)
+- [Molecular Dating and Phylodynamics of DEC lineages](https://github.com/ghru-nigeria/degain_workshop_2026/tree/main/modules/phylogenetics/phylodynamics) 
 
 ## Week 2 (Module 2): To identify vaccine, drug or diagnostic targets that could address multiple DEC categories from DEC pangenomes
-- Identification of Vaccine and Diagnostic Targets 
+- [Identification of Vaccine and Diagnostic Targets](https://github.com/ghru-nigeria/degain_workshop_2026/tree/main/modules/gwas) 
 - Modelling and Machine Learning Approaches to Bacterial Genomics
 
 If you wish to reuse workshop materials, please cite the project DOI, as well as the individual authors of the relevant materials.
